@@ -119,6 +119,41 @@ describe("thread relationships", () => {
     ]);
   });
 
+  it.each([false, true])(
+    "shows a settled subagent waiting on its own subagents (parent rows: %s)",
+    (withParentRows) => {
+      const parent = ThreadId.make("thread-parent");
+      const child = ThreadId.make("thread-child");
+      const graph = deriveThreadRelationshipGraph({
+        threads: [
+          { id: parent, status: "completed", lineage: { parentThreadId: null } },
+          {
+            id: child,
+            activityRunStatus: null,
+            latestRunId: "child-run",
+            status: "completed",
+            pendingBackgroundTasks: [{ taskId: "helper", kind: "subagent" }],
+            lineage: {
+              rootThreadId: parent,
+              parentThreadId: parent,
+              relationshipToParent: "subagent",
+            },
+          },
+        ] as never,
+        projection: withParentRows
+          ? ({
+              thread: { id: parent },
+              subagents: [{ childThreadId: child, status: "completed" }],
+              contextTransfers: [],
+            } as never)
+          : null,
+      });
+      expect(graph.edges).toEqual([
+        expect.objectContaining({ targetThreadId: child, status: "waiting" }),
+      ]);
+    },
+  );
+
   it("keeps missing parents and cycles navigable without recursive traversal", () => {
     const root = ThreadId.make("thread-root");
     const child = ThreadId.make("thread-child");

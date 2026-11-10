@@ -599,12 +599,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     ? backgroundWorkNowItem({
         environmentId,
         threadId: activeThread.id,
-        tasks: activeBackgroundTasks,
+        tasks: isWorking
+          ? activeBackgroundTasks
+          : [...activeBackgroundTasks, ...(activeThreadShell?.pendingSubagentWork ?? [])],
         turnItems,
         // Interrupt stops the active run first, not this work; the composer owns that Stop.
         stopDisabled: runIsLive || !canOperateThread || isStoppingBackgroundWork,
         stopping: isStoppingBackgroundWork,
-        onStop: handleStopBackgroundWorkStable,
+        onStop: activeBackgroundTasks.length === 0 ? null : handleStopBackgroundWorkStable,
         onOpenThread: onOpenRelatedThreadStable,
       })
     : null;

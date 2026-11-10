@@ -166,6 +166,11 @@ export interface EnvironmentThreadShell {
   readonly pendingBackgroundTasks: ReadonlyArray<
     NonNullable<OrchestrationV2ThreadShell["pendingBackgroundTasks"]>[number]
   >;
+  /**
+   * Subagent children still working, or holding subagents of their own, after this thread's own
+   * rows for them closed. This thread's Stop does not reach them.
+   */
+  readonly pendingSubagentWork?: EnvironmentThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: ReadonlyArray<ProviderInstanceId>;
   readonly goal: OrchestrationV2ProviderGoal | null;
   readonly itemCount: number;
@@ -221,9 +226,13 @@ function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
 // unmarked, such as a dev server, present the run's own status. The
 // server suppresses the roster while an interruptible activity run exists, so a
 // remaining roster is stronger than checkpoint-oriented waiting.
-function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary | null {
+function shellRuntime(
+  thread: OrchestrationV2ThreadShell,
+  subagentWork: EnvironmentThreadShell["pendingBackgroundTasks"],
+): ThreadRuntimeSummary | null {
   const parkAtIdle =
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
+    (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) ||
+      subagentWork.length > 0) &&
     thread.status !== "failed";
   if (thread.latestRunId === null && thread.activeProviderThreadId === null && !parkAtIdle) {
     return null;
@@ -259,6 +268,7 @@ export function presentThreadShell(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
   pendingSubagentRequest: PendingSubagentRequest | null = null,
+  pendingSubagentWork: EnvironmentThreadShell["pendingBackgroundTasks"] = [],
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
   const latestRun =
@@ -277,7 +287,7 @@ export function presentThreadShell(
               : nullableIso(thread.latestRunCompletedAt),
           assistantMessageId: null,
         } satisfies ThreadRunSummary);
-  const runtime = shellRuntime(thread);
+  const runtime = shellRuntime(thread, pendingSubagentWork);
   return {
     environmentId,
     id: thread.id,
@@ -321,6 +331,7 @@ export function presentThreadShell(
     pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
+    pendingSubagentWork,
     providerInstanceHistory: thread.providerInstanceHistory ?? [],
     goal: thread.goal ?? null,
     itemCount: thread.itemCount,

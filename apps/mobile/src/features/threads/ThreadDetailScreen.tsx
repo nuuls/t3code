@@ -751,9 +751,10 @@ function ThreadDetailBody(
       );
     }
   };
-  const pendingBackgroundWork = presentPendingBackgroundWork(
-    props.selectedThread.pendingBackgroundTasks,
-  );
+  const pendingBackgroundWork = presentPendingBackgroundWork([
+    ...props.selectedThread.pendingBackgroundTasks,
+    ...(props.selectedThread.pendingSubagentWork ?? []),
+  ]);
   const extensionStatus = props.extensionStatuses?.length
     ? {
         label: `Pi · ${props.extensionStatuses.map((status) => status.text).join(" · ")}`,
@@ -846,12 +847,15 @@ function ThreadDetailBody(
             threadId: props.selectedThread.id,
           });
         },
-        action: {
-          label: statusPending ? "Stopping..." : "Stop",
-          accessibilityLabel: "Stop background work",
-          disabled: !props.canOperateThread || statusPending,
-          onPress: () => void runStatusAction("stop"),
-        },
+        action:
+          props.selectedThread.pendingBackgroundTasks.length === 0
+            ? null
+            : {
+                label: statusPending ? "Stopping..." : "Stop",
+                accessibilityLabel: "Stop background work",
+                disabled: !props.canOperateThread || statusPending,
+                onPress: () => void runStatusAction("stop"),
+              },
       };
     }
     if (contentPresentationKind === "ready" && (lifecycleSnoozed || settled || woke)) {

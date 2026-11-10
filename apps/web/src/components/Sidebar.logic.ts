@@ -677,6 +677,7 @@ type ThreadStatusInput = Pick<
 > & {
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
+  pendingSubagentWork?: SidebarThreadSummary["pendingSubagentWork"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
 };
 
@@ -1240,7 +1241,8 @@ export function resolveThreadStatusPill(input: {
 
   if (
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) ||
+    (thread.pendingSubagentWork?.length ?? 0) > 0
   ) {
     return {
       label: "Waiting",

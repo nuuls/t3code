@@ -175,9 +175,11 @@ export function backgroundWorkNowItem(input: {
   readonly turnItems: ThreadStructure["turnItems"];
   readonly stopDisabled: boolean;
   readonly stopping: boolean;
-  readonly onStop: () => Promise<void>;
+  /** Null when none of the tasks is this thread's own, so its Stop would not reach them. */
+  readonly onStop: (() => Promise<void>) | null;
   readonly onOpenThread: (threadId: ThreadId) => void;
 }): ThreadNowItem | null {
+  const { onStop } = input;
   const { onOpenThread } = input;
   const presentation = presentPendingBackgroundWork(input.tasks);
   if (presentation === null) return null;
@@ -260,9 +262,11 @@ export function backgroundWorkNowItem(input: {
             Open
           </InlineButton>
         )}
-        <InlineButton disabled={input.stopDisabled} onClick={() => void input.onStop()}>
-          {input.stopping ? "Stopping..." : "Stop"}
-        </InlineButton>
+        {onStop === null ? null : (
+          <InlineButton disabled={input.stopDisabled} onClick={() => void onStop()}>
+            {input.stopping ? "Stopping..." : "Stop"}
+          </InlineButton>
+        )}
       </>
     ),
   };

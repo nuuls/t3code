@@ -4,9 +4,21 @@ import {
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 
 export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "transfer";
+
+// A settled thread still waits on work it holds, as its own status shows.
+function settledShellStatus(thread: {
+  readonly status: OrchestrationV2ThreadShell["status"] | null;
+  readonly pendingBackgroundTasks?: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
+}): string | null {
+  return thread.status !== "failed" &&
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+    ? "waiting"
+    : thread.status;
+}
 
 export interface ThreadRelationshipNode {
   readonly threadId: ThreadId;
@@ -95,7 +107,7 @@ export function deriveThreadRelationshipGraph(input: {
       sourceThreadId: parentThreadId,
       targetThreadId: thread.id,
       kind: thread.lineage.relationshipToParent === "subagent" ? "subagent" : "fork",
-      status: thread.activityRunStatus ?? thread.status,
+      status: thread.activityRunStatus ?? settledShellStatus(thread),
     });
   }
 
@@ -111,7 +123,7 @@ export function deriveThreadRelationshipGraph(input: {
         status:
           child?.activityRunStatus ??
           (child?.latestRunId != null && !isOrchestrationV2WorkActive(subagent.status)
-            ? child.status
+            ? settledShellStatus(child)
             : subagent.status),
       });
     }

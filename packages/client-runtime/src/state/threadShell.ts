@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ShellSnapshot,
   ProjectId,
   ScopedProjectRef,
@@ -11,6 +12,7 @@ import {
   isProviderNativeSubagentThread,
   OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
@@ -31,6 +33,9 @@ const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
 const EMPTY_THREAD_INDEX: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> = new Map();
 const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();
+type SubagentWork = ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+const EMPTY_SUBAGENT_WORK: SubagentWork = Object.freeze([]);
+const EMPTY_SUBAGENT_WORK_BY_THREAD: ReadonlyMap<ThreadId, SubagentWork> = new Map();
 const EMPTY_SIDE_CHATS_BY_PARENT: ReadonlyMap<
   ThreadId,
   ReadonlyArray<OrchestrationV2ThreadShell>
@@ -152,6 +157,68 @@ const sameRequests = (
   left.size === right.size &&
   [...right].every(([threadId, request]) => left.get(threadId) === request);
 
+/**
+ * Each thread's subagent children whose work, or their own subagents' work, still runs, for
+ * threads that are idle and do not list that child themselves. A parent's own row for a child
+ * closes when the child's turn ends, while the child's subagents run on.
+ */
+function subagentWorkByThread(
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>,
+): ReadonlyMap<ThreadId, SubagentWork> {
+  const work = new Map<ThreadId, Array<OrchestrationV2PendingBackgroundTask>>();
+  for (const thread of threads) {
+    if (
+      thread.lineage.relationshipToParent !== "subagent" ||
+      !(
+        isChildRunLive(thread) || backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+      )
+    ) {
+      continue;
+    }
+    const seen = new Set<ThreadId>([thread.id]);
+    for (let child = thread; child.lineage.parentThreadId !== null;) {
+      const parentId = child.lineage.parentThreadId;
+      if (seen.has(parentId)) break;
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      const children = work.get(parentId) ?? [];
+      if (children.some((task) => task.taskId === child.id)) break;
+      if (
+        parent !== undefined &&
+        !isChildRunLive(parent) &&
+        !parent.pendingBackgroundTasks?.some(
+          (task) => task.kind === "subagent" && task.childThreadId === child.id,
+        )
+      ) {
+        children.push({
+          taskId: child.id,
+          kind: "subagent",
+          description: child.title,
+          childThreadId: child.id,
+        });
+        work.set(parentId, children);
+      }
+      if (parent?.lineage.relationshipToParent !== "subagent") break;
+      child = parent;
+    }
+  }
+  return work.size === 0 ? EMPTY_SUBAGENT_WORK_BY_THREAD : work;
+}
+
+const subagentWorkKey = (work: SubagentWork) =>
+  work.map((task) => `${task.taskId}\u001f${task.description ?? ""}`).join("\u001e");
+
+const sameSubagentWork = (
+  left: ReadonlyMap<ThreadId, SubagentWork>,
+  right: ReadonlyMap<ThreadId, SubagentWork>,
+) =>
+  left.size === right.size &&
+  [...right].every(([threadId, work]) => {
+    const previous = left.get(threadId);
+    return previous !== undefined && subagentWorkKey(previous) === subagentWorkKey(work);
+  });
+
 export function childThreadInputsTitle(
   children: ReadonlyArray<Pick<EnvironmentThreadShell, "hasPendingApprovals" | "lineage">>,
 ): string {
@@ -220,6 +287,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     environmentId: EnvironmentId,
     thread: OrchestrationV2ThreadShell,
     subagentRequests: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+    subagentWork: ReadonlyMap<ThreadId, SubagentWork>,
   ) => {
     let byEnvironment = scopedThreads.get(thread);
     if (byEnvironment === undefined) {
@@ -227,10 +295,11 @@ export function createEnvironmentThreadShellAtoms(input: {
       scopedThreads.set(thread, byEnvironment);
     }
     const request = subagentRequests.get(thread.id) ?? null;
-    const key = request === null ? environmentId : `${environmentId}:${request}`;
+    const work = subagentWork.get(thread.id) ?? EMPTY_SUBAGENT_WORK;
+    const key = `${environmentId}:${request ?? ""}:${subagentWorkKey(work)}`;
     let value = byEnvironment.get(key);
     if (value === undefined) {
-      value = presentThreadShell(environmentId, thread, request);
+      value = presentThreadShell(environmentId, thread, request, work);
       byEnvironment.set(key, value);
     }
     return value;
@@ -344,6 +413,19 @@ export function createEnvironmentThreadShellAtoms(input: {
     }).pipe(Atom.withLabel(`environment-pending-subagent-requests:${environmentId}`));
   });
 
+  const subagentWorkAtom = Atom.family((environmentId: EnvironmentId) => {
+    let previous = EMPTY_SUBAGENT_WORK_BY_THREAD;
+    return Atom.make((get) => {
+      const next = subagentWorkByThread(
+        get(environmentThreadsAtom(environmentId)),
+        get(environmentThreadIndexAtom(environmentId)),
+      );
+      if (sameSubagentWork(previous, next)) return previous;
+      previous = next;
+      return next;
+    }).pipe(Atom.withLabel(`environment-subagent-work:${environmentId}`));
+  });
+
   const environmentThreadRefsAtom = Atom.family((environmentId: EnvironmentId) => {
     let previous: ReadonlyArray<ScopedThreadRef> = [];
     return Atom.make((get) => {
@@ -412,6 +494,7 @@ export function createEnvironmentThreadShellAtoms(input: {
             ref.environmentId,
             source,
             get(pendingSubagentRequestsAtom(ref.environmentId)),
+            get(subagentWorkAtom(ref.environmentId)),
           );
     }).pipe(Atom.withLabel(`environment-thread-shell:${key}`));
   });
@@ -474,7 +557,12 @@ export function createEnvironmentThreadShellAtoms(input: {
           pending.push(childKey);
           if (subagentRequest(thread) !== null || sideChatRequest(thread) !== null) {
             next.push(
-              scopedThread(environmentId, thread, get(pendingSubagentRequestsAtom(environmentId))),
+              scopedThread(
+                environmentId,
+                thread,
+                get(pendingSubagentRequestsAtom(environmentId)),
+                get(subagentWorkAtom(environmentId)),
+              ),
             );
           }
         }
@@ -510,8 +598,9 @@ export function createEnvironmentThreadShellAtoms(input: {
         return previous;
       }
       const subagentRequests = get(pendingSubagentRequestsAtom(ref.environmentId));
+      const subagentWork = get(subagentWorkAtom(ref.environmentId));
       const next = sideChats.map((thread) =>
-        scopedThread(ref.environmentId, thread, subagentRequests),
+        scopedThread(ref.environmentId, thread, subagentRequests, subagentWork),
       );
       if (
         previous.length === next.length &&
@@ -545,6 +634,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         if (refs.length === 0) continue;
         const threads = get(environmentThreadIndexAtom(projectRef.environmentId));
         const subagentRequests = get(pendingSubagentRequestsAtom(projectRef.environmentId));
+        const subagentWork = get(subagentWorkAtom(projectRef.environmentId));
         for (const ref of refs) {
           const key = threadKey(ref);
           if (seen.has(key)) {
@@ -553,7 +643,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           seen.add(key);
           const thread = threads.get(ref.threadId);
           if (thread !== undefined) {
-            next.push(scopedThread(ref.environmentId, thread, subagentRequests));
+            next.push(scopedThread(ref.environmentId, thread, subagentRequests, subagentWork));
           }
         }
       }
@@ -583,8 +673,9 @@ export function createEnvironmentThreadShellAtoms(input: {
     const next: EnvironmentThreadShell[] = [];
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
+      const subagentWork = get(subagentWorkAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
-        next.push(scopedThread(environmentId, thread, subagentRequests));
+        next.push(scopedThread(environmentId, thread, subagentRequests, subagentWork));
       }
     }
     if (arrayElementsEqual(previousThreadShells, next)) {
@@ -698,6 +789,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     const hidden = get(hiddenThreadKeysAtom);
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
+      const subagentWork = get(subagentWorkAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         if (
           thread.archivedAt !== null ||
@@ -706,7 +798,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         ) {
           continue;
         }
-        next.push(scopedThread(environmentId, thread, subagentRequests));
+        next.push(scopedThread(environmentId, thread, subagentRequests, subagentWork));
       }
     }
     if (arrayElementsEqual(previousNavigationShells, next)) return previousNavigationShells;

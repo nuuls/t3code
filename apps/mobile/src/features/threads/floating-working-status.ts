@@ -23,7 +23,8 @@ export type FloatingWorkingStatus =
       readonly accessibilityLabel: string;
       readonly waiting: boolean;
       readonly onPress: () => void;
-      readonly action: FloatingStatusAction;
+      /** Null when the thread's Stop would not reach any of the work. */
+      readonly action: FloatingStatusAction | null;
     }
   | {
       readonly kind: "lifecycle";

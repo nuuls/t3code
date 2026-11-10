@@ -308,6 +308,38 @@ describe("v2 thread shell lists", () => {
     });
     expect(registry.get(parent)?.pendingSubagentRequest).toBeNull();
     expect(isThreadWorking(registry.get(parent)!)).toBe(true);
+
+    // The root's own row for the child closed, but the child's helper still runs.
+    const closedRoot = { ...root, pendingBackgroundTasks: [] };
+    const holdingChild = {
+      ...child,
+      latestRunId: RunId.make("review-run"),
+      status: "completed" as const,
+      activityRunStatus: null,
+      pendingBackgroundTasks: [
+        { taskId: "review-helper", kind: "subagent" as const, childThreadId: grandchild.id },
+      ],
+    };
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [closedRoot, holdingChild, grandchild],
+    });
+    expect(isThreadWorking(registry.get(parent)!)).toBe(true);
+    expect(registry.get(parent)?.runtime?.status).toBe("idle");
+    expect(registry.get(parent)?.pendingSubagentWork).toEqual([
+      { taskId: child.id, kind: "subagent", description: child.title, childThreadId: child.id },
+    ]);
+
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [
+        closedRoot,
+        { ...holdingChild, pendingBackgroundTasks: [] },
+        { ...grandchild, status: "completed" as const, activityRunStatus: null },
+      ],
+    });
+    expect(isThreadWorking(registry.get(parent)!)).toBe(false);
+    expect(registry.get(parent)?.pendingSubagentWork).toEqual([]);
     disposeInputs();
     disposeParent();
     registry.dispose();
