@@ -1102,3 +1102,56 @@ it.effect(
     );
   },
 );
+
+it.effect("t3_thread_list reports a thread held by awaited background work as waiting", () => {
+  const completedShell = (id: string, awaited: true | undefined) => ({
+    ...McpToolAccessTestkit.liveThreadShell(ThreadId.make(id), { activeRunId: null }),
+    status: "completed" as const,
+    activityRunStatus: null,
+    pendingBackgroundTasks: [{ kind: "command" as const, taskId: `${id}-task`, awaited }],
+  });
+  const held = completedShell("awaited-command-thread", true);
+  const devServer = completedShell("dev-server-thread", undefined);
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({
+        name: "t3_thread_list",
+        arguments: { projectId: held.projectId, statuses: ["waiting"] },
+      })
+      .pipe(
+        Effect.provideService(
+          McpInvocationContext.McpInvocationContext,
+          clientScope("full-access"),
+        ),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({
+      threads: [{ threadId: held.id, status: "waiting" }],
+      total: 1,
+    });
+  }).pipe(
+    Effect.provide(
+      layerOrchestratorToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            listProjectThreads: () => Effect.succeed([held, devServer]),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+        Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+        Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      ),
+    ),
+  );
+});

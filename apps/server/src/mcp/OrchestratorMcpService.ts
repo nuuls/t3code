@@ -68,6 +68,7 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -796,6 +797,18 @@ function threadPullRequests(
   }));
 }
 
+// Matches the sidebar: work the agent awaits holds a finished run as waiting; dev servers do not.
+function agentFacingThreadStatus<Status extends string>(
+  activeStatus: Status | null | undefined,
+  runStatus: Status,
+  pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"],
+): Status | "waiting" {
+  if (activeStatus != null) return activeStatus;
+  return runStatus !== "failed" && backgroundWorkHoldsCompletion(pendingBackgroundTasks ?? [])
+    ? "waiting"
+    : runStatus;
+}
+
 function listItemFromShell(
   scope: McpInvocationScope,
   shell: OrchestrationV2ThreadShell,
@@ -808,7 +821,11 @@ function listItemFromShell(
     link: threadLinkFor(scope, shell.id, shell.title),
     createdBy: shell.createdBy,
     creationSource: shell.creationSource,
-    status: shell.activityRunStatus ?? shell.status,
+    status: agentFacingThreadStatus(
+      shell.activityRunStatus,
+      shell.status,
+      shell.pendingBackgroundTasks,
+    ),
     latestRunId: shell.latestRunId,
     providerInstanceId: shell.modelSelection.instanceId,
     model: shell.modelSelection.model,
@@ -842,7 +859,11 @@ function threadDetail(
     link: threadLinkFor(scope, projection.thread.id, projection.thread.title),
     createdBy: projection.thread.createdBy,
     creationSource: projection.thread.creationSource,
-    status: active?.status ?? latest?.status ?? "idle",
+    status: agentFacingThreadStatus(
+      active?.status,
+      latest?.status ?? "idle",
+      shell.pendingBackgroundTasks,
+    ),
     latestRunId: latest?.id ?? null,
     activeRunId: active?.id ?? null,
     providerInstanceId: projection.thread.modelSelection.instanceId,
@@ -3037,7 +3058,15 @@ const make = Effect.gen(function* () {
       const titleContains = input.titleContains?.toLocaleLowerCase();
       const filtered = projectThreads
         .filter(
-          (thread) => statuses === null || statuses.has(thread.activityRunStatus ?? thread.status),
+          (thread) =>
+            statuses === null ||
+            statuses.has(
+              agentFacingThreadStatus(
+                thread.activityRunStatus,
+                thread.status,
+                thread.pendingBackgroundTasks,
+              ),
+            ),
         )
         .filter(
           (thread) =>
